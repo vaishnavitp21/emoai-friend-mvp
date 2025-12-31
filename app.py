@@ -82,16 +82,13 @@ def classify_emotion(text):
         "all": [(p["label"], float(p["score"])) for p in preds]
     }
 
-# ---------------- History saving ----------------
+# ---------------- History (SAFE) ----------------
 HISTORY_DIR = Path("history")
 HISTORY_FILE = HISTORY_DIR / "emotions.json"
 HISTORY_DIR.mkdir(exist_ok=True)
 
-def load_history_safe():
-    """
-    Safely load emotion history.
-    Returns empty list if file is missing, empty, or corrupted.
-    """
+def load_emotion_history():
+    """Safely load emotion history"""
     try:
         if not HISTORY_FILE.exists():
             return []
@@ -101,21 +98,13 @@ def load_history_safe():
             return []
 
         data = json.loads(content)
-        if isinstance(data, list):
-            return data
-
-        return []
+        return data if isinstance(data, list) else []
 
     except Exception:
-        logging.exception("History file corrupted, resetting")
+        logging.exception("Failed to load emotion history")
         return []
 
 def save_emotion_if_allowed(result: dict, allow_save: bool):
-    """
-    Save emotion result safely if user allows it.
-    - No raw audio
-    - Redact long text
-    """
     if not allow_save or "error" in result:
         return
 
@@ -131,13 +120,21 @@ def save_emotion_if_allowed(result: dict, allow_save: bool):
             )
         }
 
-        data = load_history_safe()
+        data = load_emotion_history()
         data.append(entry)
-
         HISTORY_FILE.write_text(json.dumps(data, indent=2))
 
     except Exception:
         logging.exception("Failed to save emotion history")
+
+def clear_emotion_history():
+    """Clear history safely"""
+    try:
+        HISTORY_FILE.write_text("[]")
+        return []
+    except Exception:
+        logging.exception("Failed to clear history")
+        return []
 
 # ---------------- Handlers ----------------
 def handle_audio_submit(audio, allow_save):
@@ -182,46 +179,75 @@ This app is **not a medical or crisis service**.
     gr.Markdown(
         """
 **Data & Privacy Notice**  
-• Audio is processed locally for transcription  
-• Transcripts are not saved unless enabled  
-• You can turn this off anytime
+• Audio is processed locally  
+• No audio is stored  
+• Emotion history is saved **only if enabled**
 """
     )
 
-    save_history = gr.Checkbox(label="Save Chat History", value=False)
+    save_history = gr.Checkbox(label="Save Emotion History", value=False)
 
-    gr.Markdown("## AI Friend — Voice & Text Emotion Classifier")
+    with gr.Tabs():
 
-    with gr.Row():
-        audio_input = gr.Audio(
-            sources=["microphone"],
-            type="filepath",
-            label="Record voice"
-        )
-        audio_btn = gr.Button("Transcribe & Classify")
+        # -------- TAB 1 --------
+        with gr.Tab("Emotion Classifier"):
+            gr.Markdown("## AI Friend — Voice & Text Emotion Classifier")
 
-    with gr.Row():
-        text_input = gr.Textbox(
-            label="Or type text",
-            placeholder="Type here if audio fails...",
-            lines=4
-        )
-        text_btn = gr.Button("Classify Text")
+            with gr.Row():
+                audio_input = gr.Audio(
+                    sources=["microphone"],
+                    type="filepath",
+                    label="Record voice"
+                )
+                audio_btn = gr.Button("Transcribe & Classify")
 
-    output_label = gr.Textbox(label="Top Emotion")
-    output_json = gr.JSON(label="Full Emotion Scores")
+            with gr.Row():
+                text_input = gr.Textbox(
+                    label="Or type text",
+                    placeholder="Type here if audio fails...",
+                    lines=4
+                )
+                text_btn = gr.Button("Classify Text")
 
-    audio_btn.click(
-        fn=handle_audio_submit,
-        inputs=[audio_input, save_history],
-        outputs=[output_label, output_json]
-    )
+            output_label = gr.Textbox(label="Top Emotion")
+            output_json = gr.JSON(label="Full Emotion Scores")
 
-    text_btn.click(
-        fn=handle_text_submit,
-        inputs=[text_input, save_history],
-        outputs=[output_label, output_json]
-    )
+            audio_btn.click(
+                fn=handle_audio_submit,
+                inputs=[audio_input, save_history],
+                outputs=[output_label, output_json]
+            )
+
+            text_btn.click(
+                fn=handle_text_submit,
+                inputs=[text_input, save_history],
+                outputs=[output_label, output_json]
+            )
+
+        # -------- TAB 2 --------
+        with gr.Tab("Emotion History"):
+            gr.Markdown("## Saved Emotion History")
+
+            history_viewer = gr.JSON(
+                value=load_emotion_history,
+                label="Emotion History"
+            )
+
+            with gr.Row():
+                refresh_btn = gr.Button("Refresh History")
+                clear_btn = gr.Button("Clear History", variant="stop")
+
+            refresh_btn.click(
+                fn=load_emotion_history,
+                inputs=[],
+                outputs=history_viewer
+            )
+
+            clear_btn.click(
+                fn=clear_emotion_history,
+                inputs=[],
+                outputs=history_viewer
+            )
 
 # ---------------- Run ----------------
 if __name__ == "__main__":
