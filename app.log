@@ -1,3 +1,26 @@
 2025-12-05 22:59:58,598 INFO: HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
 2025-12-30 21:37:59,631 INFO: HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
 2025-12-30 21:40:50,509 INFO: HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-31 10:48:47,837 INFO: HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-31 10:57:50,237 INFO: HTTP Request: GET http://localhost:7860/gradio_api/startup-events "HTTP/1.1 200 OK"
+2025-12-31 10:57:51,933 INFO: HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-31 10:57:52,981 INFO: HTTP Request: HEAD http://localhost:7860/ "HTTP/1.1 200 OK"
+2025-12-31 19:19:36,035 INFO: HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-31 19:19:37,040 INFO: HTTP Request: GET http://localhost:7860/gradio_api/startup-events "HTTP/1.1 200 OK"
+2025-12-31 19:19:39,115 INFO: HTTP Request: HEAD http://localhost:7860/ "HTTP/1.1 200 OK"
+2025-12-31 19:32:04,573 INFO: HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-31 19:32:06,047 INFO: HTTP Request: GET http://localhost:7860/gradio_api/startup-events "HTTP/1.1 200 OK"
+2025-12-31 19:32:08,150 INFO: HTTP Request: HEAD http://localhost:7860/ "HTTP/1.1 200 OK"
+2025-12-31 19:36:26,650 ERROR: History file corrupted, resetting
+Traceback (most recent call last):
+  File "D:\emoai-mvp\app.py", line 103, in load_history_safe
+    data = json.loads(content)
+  File "C:\Users\Dell\anaconda3\Lib\json\__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Users\Dell\anaconda3\Lib\json\decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Dell\anaconda3\Lib\json\decoder.py", line 363, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 2 column 3 (char 4)

@@ -2,167 +2,227 @@
 """
 Gradio voice -> Whisper transcription -> text emotion classification
 Fallback to typed text if transcription fails.
-
-Requirements (example):
-pip install gradio transformers torch torchvision torchaudio
-pip install -U openai-whisper      # or use faster-whisper for speed
-# ffmpeg is required for whisper (install on system: e.g. apt, choco, brew)
 """
 
 import os
 import time
+import json
 import logging
 from pathlib import Path
 
 import gradio as gr
 
-# Whisper and transformers imports
+# ---------------- Whisper ----------------
 try:
-    import whisper             # openai-whisper package
+    import whisper
     WHISPER_AVAILABLE = True
 except Exception:
     WHISPER_AVAILABLE = False
 
-from transformers import pipeline, Pipeline, AutoTokenizer, AutoModelForSequenceClassification
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 
-# ---- Logging ----
-logging.basicConfig(filename="app.log", level=logging.INFO,
-                    format="%(asctime)s %(levelname)s: %(message)s")
+# ---------------- Logging ----------------
+logging.basicConfig(
+    filename="app.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
 
-# ---- Models setup (loads once at startup) ----
-MODEL_NAME = "j-hartmann/emotion-english-distilroberta-base"  # compact emotion model on HF
+# ---------------- Models ----------------
+MODEL_NAME = "j-hartmann/emotion-english-distilroberta-base"
 
-def load_text_emotion_pipeline(model_name=MODEL_NAME):
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        text_pipe = pipeline("text-classification", model=model, tokenizer=tokenizer, return_all_scores=True)
-        return text_pipe
-    except Exception as e:
-        logging.exception("Failed to load emotion pipeline")
-        raise
+def load_text_emotion_pipeline():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+    return pipeline(
+        "text-classification",
+        model=model,
+        tokenizer=tokenizer,
+        return_all_scores=True
+    )
 
 text_emotion_pipe = load_text_emotion_pipeline()
 
-# Whisper model load (optional)
-WHISPER_MODEL = "small"   # change to "tiny" or "small" depending on CPU speed
-whisper_model = None
-if WHISPER_AVAILABLE:
-    try:
-        whisper_model = whisper.load_model(WHISPER_MODEL)
-    except Exception:
-        whisper_model = None
+WHISPER_MODEL = "small"
+whisper_model = whisper.load_model(WHISPER_MODEL) if WHISPER_AVAILABLE else None
 
-# ---- Helpers ----
+# ---------------- Audio helpers ----------------
 OUTPUT_FOLDER = Path("recordings")
 OUTPUT_FOLDER.mkdir(exist_ok=True)
 
-def save_audio_file(audio, prefix="audio"):
-    """
-    Gradio gives audio either as (sample_rate, np-array) or a temporary file path.
-    This helper saves it to a wav file and returns file path.
-    """
-    # If audio is a file path (gr.Audio sometimes returns a temp file path)
+def save_audio_file(audio):
     if isinstance(audio, str) and os.path.isfile(audio):
-        dest = OUTPUT_FOLDER / f"{prefix}_{int(time.time())}.wav"
+        dest = OUTPUT_FOLDER / f"audio_{int(time.time())}.wav"
         os.replace(audio, dest)
         return str(dest)
 
-    # If audio is (sr, np.ndarray)
     import soundfile as sf
     sr, data = audio
-    dest = OUTPUT_FOLDER / f"{prefix}_{int(time.time())}.wav"
+    dest = OUTPUT_FOLDER / f"audio_{int(time.time())}.wav"
     sf.write(str(dest), data, sr)
     return str(dest)
 
-def transcribe_with_whisper(audio_path):
+def transcribe_audio(path):
     if whisper_model is None:
-        raise RuntimeError("Whisper model not available on this machine.")
-    # Use whisper to transcribe
-    result = whisper_model.transcribe(audio_path)
-    text = result.get("text", "").strip()
-    return text
+        raise RuntimeError("Whisper not available")
+    result = whisper_model.transcribe(path)
+    return result.get("text", "").strip()
 
-def classify_emotion_from_text(text: str):
+def classify_emotion(text):
+    if not text:
+        return {"error": "No text provided"}
+
+    preds = text_emotion_pipe(text[:1000])[0]
+    preds = sorted(preds, key=lambda x: x["score"], reverse=True)
+
+    return {
+        "text": text,
+        "top_label": preds[0]["label"],
+        "top_score": float(preds[0]["score"]),
+        "all": [(p["label"], float(p["score"])) for p in preds]
+    }
+
+# ---------------- History saving ----------------
+HISTORY_DIR = Path("history")
+HISTORY_FILE = HISTORY_DIR / "emotions.json"
+HISTORY_DIR.mkdir(exist_ok=True)
+
+def load_history_safe():
     """
-    Returns a sorted list of (label, score) and a top label.
+    Safely load emotion history.
+    Returns empty list if file is missing, empty, or corrupted.
     """
-    if not text or text.strip() == "":
-        return {"error": "No text provided for emotion classification."}
     try:
-        preds = text_emotion_pipe(text[:1000])  # truncate to first 1000 chars for speed
-        # preds is list of dicts with label and score for each candidate label
-        # transform to sorted list
-        scores = sorted(preds[0], key=lambda x: x["score"], reverse=True)
-        top = scores[0]
-        return {
-            "text": text,
-            "top_label": top["label"],
-            "top_score": float(top["score"]),
-            "all": [(d["label"], float(d["score"])) for d in scores]
-        }
-    except Exception:
-        logging.exception("Emotion classification failed")
-        return {"error": "Emotion classification failed (see app.log)."}
+        if not HISTORY_FILE.exists():
+            return []
 
-# ---- Gradio handlers ----
-def handle_audio_submit(audio):
+        content = HISTORY_FILE.read_text().strip()
+        if not content:
+            return []
+
+        data = json.loads(content)
+        if isinstance(data, list):
+            return data
+
+        return []
+
+    except Exception:
+        logging.exception("History file corrupted, resetting")
+        return []
+
+def save_emotion_if_allowed(result: dict, allow_save: bool):
     """
-    audio: file path or (sr, np-array) depending on gradio
+    Save emotion result safely if user allows it.
+    - No raw audio
+    - Redact long text
     """
+    if not allow_save or "error" in result:
+        return
+
+    try:
+        entry = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "top_label": result.get("top_label"),
+            "top_score": result.get("top_score"),
+            "text": (
+                result.get("text", "")[:200] + "..."
+                if len(result.get("text", "")) > 200
+                else result.get("text", "")
+            )
+        }
+
+        data = load_history_safe()
+        data.append(entry)
+
+        HISTORY_FILE.write_text(json.dumps(data, indent=2))
+
+    except Exception:
+        logging.exception("Failed to save emotion history")
+
+# ---------------- Handlers ----------------
+def handle_audio_submit(audio, allow_save):
     try:
         if audio is None:
-            return {"error": "No audio received. Please record or type text."}
-        saved_path = save_audio_file(audio)
-        logging.info(f"Saved audio to {saved_path}")
+            return "No audio provided", {}
 
-        # Transcribe
-        try:
-            transcription = transcribe_with_whisper(saved_path)
-        except Exception as e:
-            logging.exception("Transcription failed")
-            # return error but allow typed-text fallback in UI
-            return {"error": "Transcription failed. Please type text or check app.log."}
+        path = save_audio_file(audio)
+        text = transcribe_audio(path)
+        result = classify_emotion(text)
 
-        # Classify
-        result = classify_emotion_from_text(transcription)
-        return result
+        save_emotion_if_allowed(result, allow_save)
+
+        return f"{result['top_label']} ({result['top_score']:.2f})", result
 
     except Exception as e:
-        logging.exception("handle_audio_submit failed")
-        return {"error": "Unexpected error (see app.log)."}
+        logging.exception("Audio handler failed")
+        return "Error", {"error": str(e)}
 
-def handle_text_submit(text):
+def handle_text_submit(text, allow_save):
     try:
-        return classify_emotion_from_text(text)
-    except Exception:
-        logging.exception("handle_text_submit failed")
-        return {"error": "Unexpected error (see app.log)."}
+        result = classify_emotion(text)
+        save_emotion_if_allowed(result, allow_save)
+        return f"{result['top_label']} ({result['top_score']:.2f})", result
 
-# ---- Build Gradio UI ----
+    except Exception as e:
+        logging.exception("Text handler failed")
+        return "Error", {"error": str(e)}
+
+# ---------------- UI ----------------
 with gr.Blocks() as demo:
-    gr.Markdown("## AI Friend — Voice Emotion Classifier\n**Record voice** (microphone) or **type text**. The app transcribes audio with Whisper and classifies emotion from the text.")
-    # Top banner for emergency/contact (we'll add Step 1 instructions to make this editable)
-    emergency = gr.Markdown("**EMERGENCY:** If you are in crisis, call your local emergency services or contact a trusted person.")
-    # Audio input
+
+    gr.Markdown(
+        """
+⚠️ **Emergency Notice**  
+If you are feeling unsafe or in crisis, please contact your local emergency number  
+or reach out to a trusted person.  
+This app is **not a medical or crisis service**.
+"""
+    )
+
+    gr.Markdown(
+        """
+**Data & Privacy Notice**  
+• Audio is processed locally for transcription  
+• Transcripts are not saved unless enabled  
+• You can turn this off anytime
+"""
+    )
+
+    save_history = gr.Checkbox(label="Save Chat History", value=False)
+
+    gr.Markdown("## AI Friend — Voice & Text Emotion Classifier")
+
     with gr.Row():
-        audio_in = gr.Audio(source="microphone", type="filepath", label="Record voice (click mic)", elem_id="voice_input")
-        transcribe_btn = gr.Button("Transcribe & Classify from Audio")
+        audio_input = gr.Audio(
+            sources=["microphone"],
+            type="filepath",
+            label="Record voice"
+        )
+        audio_btn = gr.Button("Transcribe & Classify")
+
     with gr.Row():
-        text_in = gr.Textbox(label="Or paste/type text here (fallback)", placeholder="Type here if audio fails...", lines=4, interactive=True)
+        text_input = gr.Textbox(
+            label="Or type text",
+            placeholder="Type here if audio fails...",
+            lines=4
+        )
         text_btn = gr.Button("Classify Text")
 
-    output_top = gr.Textbox(label="Top emotion (label + score)", interactive=False)
-    output_details = gr.JSON(label="Full scores / details")
+    output_label = gr.Textbox(label="Top Emotion")
+    output_json = gr.JSON(label="Full Emotion Scores")
 
-    # Connect events
-    transcribe_btn.click(fn=handle_audio_submit, inputs=[audio_in], outputs=[output_top, output_details],
-                         show_progress=True)
-    text_btn.click(fn=handle_text_submit, inputs=[text_in], outputs=[output_top, output_details])
+    audio_btn.click(
+        fn=handle_audio_submit,
+        inputs=[audio_input, save_history],
+        outputs=[output_label, output_json]
+    )
 
-    # small note about privacy
-    gr.Markdown("**Privacy:** Audio is temporarily saved to `recordings/` on the server. Toggle 'Save Chat History' in your settings to persist transcripts.")
+    text_btn.click(
+        fn=handle_text_submit,
+        inputs=[text_input, save_history],
+        outputs=[output_label, output_json]
+    )
 
-# Run
+# ---------------- Run ----------------
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860, debug=False)

@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2025-12-31 19:36:26",
+    "top_label": "sadness",
+    "top_score": 0.9775271415710449,
+    "text": "hello... i am sad"
+  },
+  {
+    "timestamp": "2025-12-31 19:36:46",
+    "top_label": "neutral",
+    "top_score": 0.8929252624511719,
+    "text": "THIS IS NOT JSON\n"
+  }
+]
